@@ -106,7 +106,7 @@ const System = {
             try {
                 new Notification("OZN PAY", {
                     body: `${notif.title}\nValor Líquido: R$ ${Number(notif.net || 0).toFixed(2)}`,
-                    icon: 'logo.png' // Use the local logo if available
+                    icon: 'logo.png'
                 });
             } catch (e) {
                 console.error("Erro ao enviar notificação nativa:", e);
@@ -123,7 +123,6 @@ const System = {
         Notification.requestPermission().then(permission => {
             if (permission === "granted") {
                 UI.showToast("Notificações Ativadas! 🔔");
-                // Trigger a test notification
                 new Notification("OZN PAY", {
                     body: "As notificações de sistema estão configuradas corretamente.",
                     icon: 'logo.png'

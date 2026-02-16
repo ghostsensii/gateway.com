@@ -1,10 +1,8 @@
 {
   "name": "OZN PAY Gateway",
   "short_name": "OZN PAY",
-  "description": "Premium Payment Gateway Dashboard",
-  "start_url": "index.html",
+  "start_url": "./index.html",
   "display": "standalone",
-  "orientation": "portrait",
   "background_color": "#030305",
   "theme_color": "#030305",
   "icons": [
@@ -12,7 +10,7 @@
       "src": "logo.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "maskable"
+      "purpose": "any maskable"
     },
     {
       "src": "logo.png",
