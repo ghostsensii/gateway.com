@@ -1,9 +1,9 @@
-// OZN PAY - Platform Engine v5.0 (Backend + Real-Time Sync)
+// OZN PAY - Platform Engine v5.1 (Robust Sync)
 
 // Configuração do Backend
-const BACKEND_URL = window.location.hostname === 'localhost' || window.location.hostname.startsWith('192.168')
-    ? `http://${window.location.hostname}:${window.location.port || 3000}`
-    : 'http://localhost:3000';
+const BACKEND_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? 'http://localhost:3000'
+    : `http://${window.location.hostname}:3000`;
 
 const WS_URL = BACKEND_URL.replace('http', 'ws');
 
@@ -12,25 +12,26 @@ let reconnectTimeout = null;
 
 // Conectar ao WebSocket
 function connectWebSocket() {
+    if (ws) return; // Evitar múltiplas conexões
+
     ws = new WebSocket(WS_URL);
 
     ws.onopen = () => {
         console.log('✅ Conectado ao servidor em tempo real');
-        document.getElementById('connection-status')?.remove();
+        showConnectionStatus('✅ Online', '#4cd964');
+        setTimeout(() => document.getElementById('connection-status')?.remove(), 2000);
     };
 
     ws.onmessage = (event) => {
         const message = JSON.parse(event.data);
 
         if (message.event === 'connected') {
-            // Sincronizar estado inicial
             State.notifications = message.data.notifications;
             State.products = message.data.products;
             UI.render();
         }
 
         if (message.event === 'new_notification') {
-            // Nova notificação recebida
             State.notifications.unshift(message.data);
             System.trigger(message.data);
             UI.render();
@@ -39,63 +40,80 @@ function connectWebSocket() {
 
     ws.onclose = () => {
         console.log('❌ Desconectado do servidor');
-        showConnectionStatus('Reconectando...');
+        showConnectionStatus('⚠️ Reconectando...', '#ffcc00');
+        ws = null;
         reconnectTimeout = setTimeout(connectWebSocket, 3000);
     };
 
     ws.onerror = (error) => {
         console.error('WebSocket erro:', error);
+        ws = null;
     };
 }
 
-function showConnectionStatus(msg) {
+function showConnectionStatus(msg, color) {
     let status = document.getElementById('connection-status');
     if (!status) {
         status = document.createElement('div');
         status.id = 'connection-status';
-        status.style.cssText = 'position:fixed;top:10px;right:10px;background:#ff9500;color:#000;padding:10px 20px;border-radius:8px;z-index:10000;font-weight:bold';
+        status.style.cssText = `position:fixed;top:10px;right:10px;background:${color};color:#000;padding:8px 16px;border-radius:20px;z-index:10000;font-weight:bold;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,0.3)`;
         document.body.appendChild(status);
     }
     status.textContent = msg;
+    status.style.background = color;
 }
 
 // Tentar conectar
 if (location.protocol !== 'file:') {
     connectWebSocket();
 } else {
-    showConnectionStatus('⚠️ Abra via servidor para sync em tempo real');
+    showConnectionStatus('⚠️ Modo Offline (file://)', '#ff3b30');
 }
 
 const State = {
-    user: null,
+    user: JSON.parse(localStorage.getItem('ozn_user')) || null,
     products: [],
     notifications: [],
     currentView: 'dashboard',
     isLocked: false,
 
     async notify(type, value) {
-        const response = await fetch(`${BACKEND_URL}/api/notifications`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type, value })
-        });
+        // Tentar enviar para o backend
+        try {
+            const response = await fetch(`${BACKEND_URL}/api/notifications`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type, value })
+            });
+            if (!response.ok) throw new Error('Falha na API');
 
-        const notification = await response.json();
-
-        // Atualizar local se não vier pelo WebSocket
-        if (!ws || ws.readyState !== 1) {
-            this.notifications.unshift(notification);
-            System.trigger(notification);
+            // Se tiver sucesso, o WebSocket trará de volta a notificação
+            // Não precisamos adicionar manualmente aqui para evitar duplicatas
+        } catch (e) {
+            console.warn('Backend offline, salvando localmente:', e);
+            // Fallback: criar localmente
+            const gross = parseFloat(value);
+            const fee = (gross * 0.0599) + 2.49;
+            const net = gross - fee;
+            const notif = {
+                id: Date.now(), type, title: 'Venda Aprovada (Offline)', value: gross, fee, net, timestamp: new Date().toISOString(), read: false
+            };
+            this.notifications.unshift(notif);
+            System.trigger(notif);
         }
     },
 
     async addProduct(name, value) {
         const id = 'OZN-' + Math.random().toString(36).substr(2, 4).toUpperCase();
-        await fetch(`${BACKEND_URL}/api/products`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id, name, value: parseFloat(value) })
-        });
+        try {
+            await fetch(`${BACKEND_URL}/api/products`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id, name, value: parseFloat(value) })
+            });
+        } catch (e) {
+            alert('Erro: Servidor offline. Produto criado apenas localmente.');
+        }
         this.products.unshift({ id, name, value: parseFloat(value) });
     }
 };
@@ -138,15 +156,33 @@ const System = {
     },
 
     sendPush(notif) {
+        // Tentar Service Worker (Melhor para mobile)
         if (window.swRegistration && Notification.permission === "granted") {
-            window.swRegistration.showNotification("OZN PAY 💎", {
-                body: `${notif.title}\nLíquido: R$ ${Number(notif.net || 0).toFixed(2)}`,
-                icon: 'logo.png',
-                badge: 'logo.png',
-                vibrate: [200, 100, 200],
-                tag: 'ozn-sale',
-                requireInteraction: true
-            });
+            try {
+                window.swRegistration.showNotification("OZN PAY 💎", {
+                    body: `${notif.title}\nLíquido: R$ ${Number(notif.net || 0).toFixed(2)}`,
+                    icon: 'logo.png',
+                    badge: 'logo.png',
+                    vibrate: [200, 100, 200],
+                    tag: 'ozn-sale',
+                    requireInteraction: true
+                });
+                return;
+            } catch (e) {
+                console.warn('Service Worker notification falhou, tentando fallback...');
+            }
+        }
+
+        // Tentar API Nativa (Fallback)
+        if (Notification.permission === "granted") {
+            try {
+                new Notification("OZN PAY", {
+                    body: `${notif.title}\nValor Líquido: R$ ${Number(notif.net || 0).toFixed(2)}`,
+                    icon: 'logo.png'
+                });
+            } catch (e) {
+                console.error("Notificação nativa falhou:", e);
+            }
         }
     },
 
@@ -159,7 +195,13 @@ const System = {
         Notification.requestPermission().then(permission => {
             if (permission === "granted") {
                 UI.showToast("Notificações Ativadas! 🔔");
+                // Forçar registro do SW se ainda não tiver
+                if ('serviceWorker' in navigator && !window.swRegistration) {
+                    navigator.serviceWorker.register('sw.js').then(reg => window.swRegistration = reg);
+                }
                 this.sendPush({ title: "Sistema Online", net: 0, type: 'sale' });
+            } else {
+                alert("Você precisa permitir notificações nas configurações do navegador/Android.");
             }
         });
     }
@@ -338,15 +380,29 @@ const UI = {
 const Auth = {
     async login() {
         const email = document.getElementById('email').value;
-        await fetch(`${BACKEND_URL}/api/login`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email })
-        });
-        State.user = { email };
-        UI.render();
+        try {
+            await fetch(`${BACKEND_URL}/api/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email })
+            });
+            localStorage.setItem('ozn_user', JSON.stringify({ email }));
+            State.user = { email };
+            UI.render();
+        } catch (e) {
+            console.error(e);
+            alert('Aviso: Não foi possível conectar ao servidor.\nVocê entrará no modo OFFLINE (sem sincronização).');
+            // Login offline
+            State.user = { email };
+            localStorage.setItem('ozn_user', JSON.stringify({ email }));
+            UI.render();
+        }
     },
-    logout() { State.user = null; UI.render(); }
+    logout() {
+        State.user = null;
+        localStorage.removeItem('ozn_user');
+        UI.render();
+    }
 };
 
 const Actions = {
